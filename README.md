@@ -1,9 +1,9 @@
 <p align="center">
   <a href="https://litmus.io">
     <picture>
-      <source media="(prefers-color-scheme: light)" srcset="static/litmus-logo-light.svg" />
-      <source media="(prefers-color-scheme: dark)" srcset="static/litmus-logo-dark.svg" />
-      <img src="litmus-logo-light.svg" height="60" alt="Litmus logo" />
+      <source media="(prefers-color-scheme: light)" srcset="./litmus-logo-light.svg" />
+      <source media="(prefers-color-scheme: dark)" srcset="./litmus-logo-dark.svg" />
+      <img src="./litmus-logo-light.svg" height="60" alt="Litmus logo" />
     </picture>
   </a>
 </p>
