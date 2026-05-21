@@ -3,7 +3,7 @@
     <picture>
       <source media="(prefers-color-scheme: light)" srcset="static/litmus-logo-light.svg" />
       <source media="(prefers-color-scheme: dark)" srcset="static/litmus-logo-dark.svg" />
-      <img src="static/litmus-logo-light.svg" height="60" alt="Litmus logo" />
+      <img src="litmus-logo-light.svg" height="60" alt="Litmus logo" />
     </picture>
   </a>
 </p>
