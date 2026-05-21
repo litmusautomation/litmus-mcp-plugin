@@ -1,0 +1,33 @@
+{
+  "name": "litmus-mcp",
+  "version": "0.1.0",
+  "description": "Natural-language access to Litmus Edge industrial IoT.",
+  "author": {
+    "name": "Litmus Automation",
+    "email": "support@litmus.io",
+    "url": "https://litmus.io"
+  },
+  "homepage": "https://docs.litmus.io",
+  "repository": "https://github.com/litmusautomation/litmus-mcp-plugin",
+  "license": "Apache-2.0",
+  "keywords": ["litmus", "industrial-iot", "iiot", "edge", "scada"],
+  "mcpServers": "./mcp/codex.mcp.json",
+  "hooks": "./hooks/codex.hooks.json",
+  "interface": {
+    "displayName": "Litmus Edge",
+    "shortDescription": "Industrial IoT tools for Litmus Edge",
+    "longDescription": "Query devices, read tags, sample NATS topics, run InfluxDB historical queries, and manage digital twins on your Litmus Edge instance via natural language.",
+    "developerName": "Litmus Automation",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://litmus.io",
+    "privacyPolicyURL": "https://litmus.io/privacy",
+    "termsOfServiceURL": "https://litmus.io/terms",
+    "defaultPrompt": [
+      "List all devices on my Litmus Edge",
+      "Why is device 47 offline?",
+      "Show the last hour of values for tag boiler.temperature"
+    ],
+    "brandColor": "#10B981"
+  }
+}

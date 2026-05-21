@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "litmus-mcp",
+  "displayName": "Litmus Edge",
+  "version": "0.1.0",
+  "description": "Natural-language access to Litmus Edge industrial IoT: device management, NATS topics, InfluxDB history, digital twins, and marketplace containers.",
+  "author": {
+    "name": "Litmus Automation",
+    "email": "support@litmus.io",
+    "url": "https://litmus.io"
+  },
+  "homepage": "https://docs.litmus.io",
+  "repository": "https://github.com/litmusautomation/litmus-mcp-plugin",
+  "license": "Apache-2.0",
+  "keywords": ["litmus", "industrial-iot", "iiot", "edge", "mcp", "scada", "opc-ua", "nats", "influxdb"],
+  "mcpServers": "./mcp/claude.mcp.json",
+  "hooks": "./hooks/claude.hooks.json",
+  "userConfig": {
+    "edge_url": {
+      "type": "string",
+      "title": "Litmus Edge URL",
+      "description": "Base URL of your Litmus Edge instance (e.g. https://edge.example.com)",
+      "required": true
+    },
+    "edge_client_id": {
+      "type": "string",
+      "title": "Edge API Client ID",
+      "description": "OAuth client ID from your Litmus Edge admin console",
+      "required": true
+    },
+    "edge_client_secret": {
+      "type": "string",
+      "title": "Edge API Client Secret",
+      "description": "OAuth client secret from your Litmus Edge admin console",
+      "sensitive": true,
+      "required": true
+    },
+    "validate_certificate": {
+      "type": "boolean",
+      "title": "Validate TLS certificate",
+      "description": "Set true for production Edges with valid certs; false for self-signed (default)",
+      "default": false
+    },
+    "edge_manager_url": {
+      "type": "string",
+      "title": "LEM URL (optional)",
+      "description": "Litmus Edge Manager URL. Required only for LEM tools."
+    },
+    "edge_api_token": {
+      "type": "string",
+      "title": "LEM API token (optional)",
+      "description": "Required for LEM tools and LEM-bridge auth",
+      "sensitive": true
+    },
+    "edge_manager_project_id": {
+      "type": "string",
+      "title": "LEM project ID (optional)",
+      "description": "Default LEM project. Can be overridden per tool call."
+    },
+    "edge_manager_device_id": {
+      "type": "string",
+      "title": "LEM device ID (optional)",
+      "description": "Required only for LEM-bridge mode (proxy through LEM to a specific Edge)"
+    },
+    "edge_manager_admin_url": {
+      "type": "string",
+      "title": "LEM admin URL (optional)",
+      "description": "Defaults to LEM URL host on port 8446 if blank"
+    },
+    "nats_source": {
+      "type": "string",
+      "title": "NATS host",
+      "description": "Hostname or IP of the NATS broker on your Edge",
+      "default": "localhost"
+    },
+    "nats_port": {
+      "type": "number",
+      "title": "NATS port",
+      "description": "TCP port the NATS broker listens on",
+      "default": 4222
+    },
+    "nats_user": {
+      "type": "string",
+      "title": "NATS username (optional)",
+      "description": "Username for NATS authentication. Leave blank for token or anonymous auth."
+    },
+    "nats_password": {
+      "type": "string",
+      "title": "NATS password (optional)",
+      "description": "Password matching the NATS username above.",
+      "sensitive": true
+    },
+    "nats_token": {
+      "type": "string",
+      "title": "NATS token (optional)",
+      "description": "Token-based NATS authentication. Alternative to username/password.",
+      "sensitive": true
+    },
+    "nats_tls": {
+      "type": "boolean",
+      "title": "NATS use TLS",
+      "description": "Use TLS when connecting to the NATS broker. Default true.",
+      "default": true
+    },
+    "influx_host": {
+      "type": "string",
+      "title": "InfluxDB host (optional)",
+      "description": "Hostname for InfluxDB historical queries. Required only for the influx_query tool."
+    },
+    "influx_port": {
+      "type": "number",
+      "title": "InfluxDB port",
+      "description": "TCP port InfluxDB listens on.",
+      "default": 8086
+    },
+    "influx_db_name": {
+      "type": "string",
+      "title": "InfluxDB database name (optional)",
+      "description": "Database to query. Defaults to tsdata if blank."
+    },
+    "influx_username": {
+      "type": "string",
+      "title": "InfluxDB username (optional)",
+      "description": "Required when using InfluxDB tools."
+    },
+    "influx_password": {
+      "type": "string",
+      "title": "InfluxDB password (optional)",
+      "description": "Required when using InfluxDB tools.",
+      "sensitive": true
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "litmus-plugins",
+  "owner": {
+    "name": "Litmus Automation",
+    "email": "support@litmus.io"
+  },
+  "description": "Official Litmus Automation plugins for Claude Code",
+  "plugins": [
+    {
+      "name": "litmus-mcp",
+      "source": "./",
+      "description": "Natural-language access to Litmus Edge",
+      "category": "industrial-iot",
+      "keywords": ["litmus", "edge", "iiot"]
+    }
+  ]
+}

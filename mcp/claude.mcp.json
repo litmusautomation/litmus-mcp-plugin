@@ -1,0 +1,31 @@
+{
+  "mcpServers": {
+    "litmus": {
+      "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/src/server.py"],
+      "env": {
+        "ENABLE_STDIO": "true",
+        "EDGE_URL": "${user_config.edge_url}",
+        "EDGE_API_CLIENT_ID": "${user_config.edge_client_id}",
+        "EDGE_API_CLIENT_SECRET": "${user_config.edge_client_secret}",
+        "VALIDATE_CERTIFICATE": "${user_config.validate_certificate}",
+        "EDGE_MANAGER_URL": "${user_config.edge_manager_url}",
+        "EDGE_API_TOKEN": "${user_config.edge_api_token}",
+        "EDGE_MANAGER_PROJECT_ID": "${user_config.edge_manager_project_id}",
+        "EDGE_MANAGER_DEVICE_ID": "${user_config.edge_manager_device_id}",
+        "EDGE_MANAGER_ADMIN_URL": "${user_config.edge_manager_admin_url}",
+        "NATS_SOURCE": "${user_config.nats_source}",
+        "NATS_PORT": "${user_config.nats_port}",
+        "NATS_USER": "${user_config.nats_user}",
+        "NATS_PASSWORD": "${user_config.nats_password}",
+        "NATS_TOKEN": "${user_config.nats_token}",
+        "NATS_TLS": "${user_config.nats_tls}",
+        "INFLUX_HOST": "${user_config.influx_host}",
+        "INFLUX_PORT": "${user_config.influx_port}",
+        "INFLUX_DB_NAME": "${user_config.influx_db_name}",
+        "INFLUX_USERNAME": "${user_config.influx_username}",
+        "INFLUX_PASSWORD": "${user_config.influx_password}"
+      }
+    }
+  }
+}

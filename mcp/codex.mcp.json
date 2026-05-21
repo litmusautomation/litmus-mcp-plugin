@@ -1,0 +1,11 @@
+{
+  "mcp_servers": {
+    "litmus": {
+      "command": "${PLUGIN_DATA}/venv/bin/python",
+      "args": ["${PLUGIN_ROOT}/src/server.py"],
+      "env": {
+        "ENABLE_STDIO": "true"
+      }
+    }
+  }
+}

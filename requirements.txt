@@ -1,0 +1,9 @@
+mcp[cli]>=1.17.0
+httpx>=0.28.0
+nats-py>=2.11.0
+influxdb>=5.3.2
+pandas>=2.3.3
+numpy>=2.3.4
+aiofiles>=24.1.0
+pydantic>=2.0
+litmussdk @ https://github.com/litmusautomation/litmus-sdk-releases/releases/download/2.6.0/litmussdk-2.6.0-py3-none-any.whl
