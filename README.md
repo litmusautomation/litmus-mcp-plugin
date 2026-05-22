@@ -55,20 +55,27 @@ On install, Claude Code prompts for your Litmus Edge URL, OAuth client ID/secret
 
 ### Codex (CLI)
 
-```
-codex plugin marketplace add litmusautomation/litmus-mcp-plugin
-```
+1. Add the marketplace and install the plugin:
 
-Then enable `litmus-mcp@litmus-plugins` from the Codex Plugins UI. Codex doesn't yet support inline credential prompts, so set these in your shell (or in `~/.codex/config.toml`) before launching Codex:
+   ```bash
+   codex plugin marketplace add litmusautomation/litmus-mcp-plugin
+   codex plugin add litmus-mcp@litmus-plugins
+   ```
 
-```bash
-export EDGE_URL=https://edge.example.com
-export EDGE_API_CLIENT_ID=...
-export EDGE_API_CLIENT_SECRET=...
-# optional:
-export NATS_SOURCE=localhost
-export INFLUX_HOST=localhost
-```
+2. Create your credentials file. Codex has no in-app UI for plugin MCP credentials, so the plugin's MCP server loads them from a known path on every launch:
+
+   ```bash
+   mkdir -p ~/.config/litmus-mcp
+   cp scripts/config.env.example ~/.config/litmus-mcp/env
+   chmod 600 ~/.config/litmus-mcp/env
+   ${EDITOR:-nano} ~/.config/litmus-mcp/env
+   ```
+
+   Fill in at minimum `EDGE_URL`, `EDGE_API_CLIENT_ID`, and `EDGE_API_CLIENT_SECRET`. NATS, InfluxDB, and LEM blocks are optional.
+
+3. Open a new Codex thread. Run `/mcp` to confirm `litmus-edge` is listed with tools populated.
+
+To override the credentials path, set `LITMUS_MCP_ENV_FILE` in your shell before launching Codex.
 
 ## Prerequisites
 
