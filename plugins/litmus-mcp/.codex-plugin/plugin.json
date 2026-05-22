@@ -14,7 +14,7 @@
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
-    "displayName": "Litmus Edge",
+    "displayName": "Litmus MCP",
     "shortDescription": "Industrial IoT tools for Litmus Edge",
     "longDescription": "Query devices, read tags, sample NATS topics, run InfluxDB historical queries, and manage digital twins on your Litmus Edge instance via natural language.",
     "developerName": "Litmus Automation",
