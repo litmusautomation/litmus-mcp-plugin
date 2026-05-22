@@ -67,26 +67,28 @@ export INFLUX_HOST=localhost
 - Network access from your machine to your Litmus Edge instance
 - An OAuth client (ID + secret) created in your Edge admin console
 
-On first session the plugin's `SessionStart` hook creates a venv at `${*_PLUGIN_DATA}/venv` and installs the Python dependencies listed in `requirements.txt`. This runs once per `requirements.txt` change, not every session.
+On first launch the MCP server's wrapper script creates a venv and installs the Python dependencies listed in `requirements.txt`. The venv lives at `${*_PLUGIN_DATA}/venv` when a plugin data dir is provided by the host, otherwise at `~/.cache/litmus-mcp/venv`. Bootstrapping runs once per `requirements.txt` change, not every session.
 
 ## Layout
 
 ```
 litmus-mcp-plugin/
-  .claude-plugin/       Claude Code manifest + marketplace
-  .codex-plugin/        Codex manifest
-  .agents/plugins/      Codex marketplace
-  mcp/                  MCP server config (one per host)
-  hooks/                SessionStart hook config (one per host)
-  scripts/              install-deps and sync-from-server helpers
-  skills/               litmus-troubleshoot workflow
-  agents/               litmus-expert specialist subagent
-  commands/             slash-command shortcuts (/litmus-status, /litmus-devices)
-  src/                  MCP server source (synced from litmus-mcp-server)
-  requirements.txt      Python deps installed at first SessionStart
+  .claude-plugin/                Claude Code manifest + marketplace
+  mcp/claude.mcp.json            Claude MCP server config
+  hooks/claude.hooks.json        Claude SessionStart hook config
+  .agents/plugins/               Codex marketplace
+  plugins/litmus-mcp/            Codex plugin (symlinks shared dirs back to repo root)
+    .codex-plugin/plugin.json    Codex manifest
+    .mcp.json                    Codex MCP server config
+  scripts/                       install-deps, run-server wrapper, sync-from-server
+  skills/                        litmus-troubleshoot workflow
+  agents/                        litmus-expert specialist subagent
+  commands/                      slash-command shortcuts (/litmus-status, /litmus-devices)
+  src/                           MCP server source (synced from litmus-mcp-server)
+  requirements.txt               Python deps installed at first launch
 ```
 
-The two manifests intentionally point at different MCP and hook files because Claude Code substitutes `${CLAUDE_PLUGIN_ROOT}` while Codex uses `${PLUGIN_ROOT}`. Same scripts, two thin wrappers.
+Both hosts share the same MCP server code; only the manifest shape and config-file naming differ.
 
 ## Source sync
 
@@ -98,7 +100,7 @@ The MCP server code in `src/` mirrors [litmus-mcp-server](https://github.com/lit
 
 ## Releasing
 
-1. Bump `version` in both `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` (keep them in sync).
+1. Bump `version` in both `.claude-plugin/plugin.json` and `plugins/litmus-mcp/.codex-plugin/plugin.json` (keep them in sync).
 2. Update `CHANGELOG.md`.
 3. Tag and push: `git tag v0.1.0 && git push --tags`.
 4. Users get the update on their next `/plugin marketplace update` (Claude Code) or `codex plugin marketplace upgrade` (Codex).

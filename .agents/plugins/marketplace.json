@@ -8,7 +8,7 @@
       "name": "litmus-mcp",
       "source": {
         "source": "local",
-        "path": "./"
+        "path": "./plugins/litmus-mcp"
       },
       "policy": {
         "installation": "AVAILABLE",

@@ -11,11 +11,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
-PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-${PLUGIN_DATA:-}}"
-if [[ -z "$PLUGIN_DATA" ]]; then
-  echo "litmus-mcp run-server: neither CLAUDE_PLUGIN_DATA nor PLUGIN_DATA was set by the host." >&2
-  exit 1
-fi
+PLUGIN_DATA="${CLAUDE_PLUGIN_DATA:-${PLUGIN_DATA:-${XDG_CACHE_HOME:-$HOME/.cache}/litmus-mcp}}"
 
 "$PLUGIN_ROOT/scripts/install-deps.sh" "$PLUGIN_ROOT" "$PLUGIN_DATA" >&2
 

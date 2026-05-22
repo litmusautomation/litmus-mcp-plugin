@@ -11,8 +11,8 @@
   "repository": "https://github.com/litmusautomation/litmus-mcp-plugin",
   "license": "Apache-2.0",
   "keywords": ["litmus", "industrial-iot", "iiot", "edge", "scada"],
-  "mcpServers": "./mcp/codex.mcp.json",
-  "hooks": "./hooks/codex.hooks.json",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Litmus Edge",
     "shortDescription": "Industrial IoT tools for Litmus Edge",
