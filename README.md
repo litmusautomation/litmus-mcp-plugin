@@ -25,13 +25,22 @@ One repo, two plugin hosts. Same MCP server code under the hood.
 
 ## What you get
 
-- **Devices and tags**: list devices, read tag values, manage drivers
-- **Live telemetry**: subscribe to single or multiple NATS topics
-- **Historical data**: query InfluxDB time series
-- **Digital Twins**: models, instances, attributes, hierarchy
-- **Marketplace**: list and run Docker containers on the Edge
-- **Live docs**: MCP Resources fetch current pages from docs.litmus.io on demand
-- **Skills + agents**: troubleshoot workflows and a `litmus-expert` subagent that knows the docs
+- **57 MCP tools** covering DeviceHub (devices, drivers, tags), DataHub (NATS topics, InfluxDB queries), Digital Twins (models, instances, attributes, hierarchy), Applications (Docker containers), System (events, network, firewall, packet capture), and Litmus Edge Manager (fleet, licensing, dashboard, bridge mode).
+- **12 live doc resources**: MCP Resources fetch current pages from docs.litmus.io on demand, so the LLM never works from stale training data.
+- **Slash commands** for the most common one-shot queries:
+  - `/litmus-status` -- identity + device count + cloud activation
+  - `/litmus-devices` -- device table
+  - `/litmus-drivers` -- protocol drivers (active vs stopped)
+  - `/litmus-tags <device>` -- tags for a device
+  - `/litmus-containers` -- Docker containers on the Edge
+  - `/litmus-events [N]` -- recent system events
+  - `/litmus-network` -- network interface summary
+  - `/litmus-lem-fleet` -- LEM project fleet overview
+  - `/litmus-lem-licenses [days]` -- expired and soon-to-expire licenses
+- **Skills** for multi-step diagnostic workflows:
+  - `litmus-troubleshoot` -- root-cause analysis when a device is offline, stale, or returning bad values
+  - `litmus-lem-audit` -- fleet-wide LEM project health audit (alerts, license risk, version spread)
+- **`litmus-expert` subagent** for grounded questions about Litmus Edge concepts and API behavior, using live docs rather than training data.
 
 ## Install
 

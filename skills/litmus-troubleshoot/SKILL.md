@@ -9,13 +9,15 @@ When the user asks why a device is offline, stale, returning bad values, or othe
 
 1. **Confirm the device exists.** Call `get_devicehub_devices` and look for the device by name or ID. If not present, stop here and tell the user the device is not registered.
 
-2. **Check the driver.** Note the device's driver from step 1, then call `get_litmusedge_driver_list` to confirm the driver is active. A stopped driver explains every downstream symptom.
+2. **Check device connection.** Call `get_device_connection_status` for the device. This probes InfluxDB for recent records and tells you whether the device is actually publishing data, not just configured.
 
-3. **Read live values.** Call `nats_subscribe_single` on the device's primary tag topic. If values are flowing, the device-to-Edge link is alive. If not, the problem is upstream (network, device power, credentials).
+3. **Check tag health.** Call `get_tag_status` for the device (or `get_all_tags_status` if you don't have a specific device yet). Tags in ERROR state localize the failure to specific registers vs the whole device.
 
-4. **Check historical continuity.** Call `influx_query` for the last 15 minutes of the device's main tag. Identify the exact timestamp where data stopped. This pins when the failure started, which often correlates with a known event (maintenance window, network change).
+4. **Read live values.** Call `get_current_value_from_topic` on the device's primary tag NATS topic. If a value comes back, the device-to-Edge link is alive in real time. If not, the problem is upstream (network, device power, credentials).
 
-5. **Check cloud activation.** If the user mentions cloud-side symptoms, call `get_cloud_activation_status` to confirm the Edge is still talking to Litmus Cloud.
+5. **Check historical continuity.** Call `query_tag_data` for the last 15 minutes of the device's main tag. Identify the exact timestamp where data stopped. This pins when the failure started, which often correlates with a known event (maintenance window, network change).
+
+6. **Check cloud activation.** If the user mentions cloud-side symptoms, call `get_cloud_activation_status` to confirm the Edge is still talking to Litmus Cloud.
 
 ## Output
 
