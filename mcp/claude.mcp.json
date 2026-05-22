@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "litmus": {
-      "command": "${CLAUDE_PLUGIN_DATA}/venv/bin/python",
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/run-server.sh",
       "args": ["${CLAUDE_PLUGIN_ROOT}/src/server.py"],
       "env": {
         "ENABLE_STDIO": "true",
