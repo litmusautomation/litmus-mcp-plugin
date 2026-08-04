@@ -16,8 +16,14 @@
 #   1 - drifted (diff printed)
 #   2 - cannot check (upstream checkout not available)
 #
-# CI note: this needs an upstream checkout, so it is a soft gate. See
-# .github/workflows/check-source-drift.yml, which clones the pinned ref.
+# This is deliberately NOT run in CI. It needs an upstream checkout, and the
+# plugin is a deliberate pin, so being behind upstream is a normal state rather
+# than a build failure. Run it by hand when syncing and before tagging a
+# release; the README release checklist lists it as the first step.
+#
+# CI (.github/workflows/audit.yml) covers the offline half instead: that every
+# tool name in commands/, skills/, and agents/ exists in the vendored src/, and
+# that every documented litmus-cli command exists in the binary.
 
 set -uo pipefail
 

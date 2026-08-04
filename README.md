@@ -188,21 +188,30 @@ Practical effect for Codex users: ask for the workflow in plain language instead
 ./scripts/check-source-drift.sh ../litmus-mcp-server # verify; exits 1 on drift
 ```
 
-Vendoring means drift is silent: the plugin keeps launching while quietly missing tools and fixes. It has already happened once, when the tree fell ~2,000 lines behind and lost `list_nats_topics`, `get_mcp_server_info`, and the litmus-cli self-install the `litmus_sdk_*` tools depend on. So the drift check compares file contents, compares the pinned version, and diffs the actual tool-name lists, and `.github/workflows/check-source-drift.yml` runs it on push, PR, and weekly.
+Vendoring means drift is silent: the plugin keeps launching while quietly missing tools and fixes. It has already happened once, when the tree fell ~2,000 lines behind and lost `list_nats_topics`, `get_mcp_server_info`, and the litmus-cli self-install the `litmus_sdk_*` tools depend on. `check-source-drift.sh` compares file contents, compares the pinned version, and diffs the actual tool-name lists.
 
-After any sync, re-check `commands/`, `skills/`, `agents/`, and this README against the new tool surface. They name tools explicitly and go stale the same way; the CI job's second step audits every backticked tool name against `src/`.
+**Run it by hand, not in CI.** The vendored tree is a deliberate pin, so sitting behind upstream is the normal state between syncs, not a build failure. A CI job that went red every time upstream merged anything would just train everyone to ignore it. Instead it is the first step of the release checklist, and the thing you run when you actually intend to sync.
+
+CI (`.github/workflows/audit.yml`) covers the offline half, which is where the real risk is and which needs no upstream checkout or secrets:
+
+- every tool name in `commands/`, `skills/`, and `agents/` exists in the vendored `src/`
+- both plugin manifests are valid JSON and their versions match
+- every documented `litmus-cli` command exists in the binary (soft-gated, since it fetches one)
+
+After any sync, re-check `commands/`, `skills/`, `agents/`, and this README against the new tool surface. They name tools explicitly and go stale the same way; the CI tool-name audit catches every backticked name that no longer exists.
 
 ## Releasing
 
-1. Bump `version` in both `.claude-plugin/plugin.json` and `plugins/litmus-mcp/.codex-plugin/plugin.json` (keep them in sync). This is the plugin version, independent of the vendored server version pinned in `pyproject.toml`.
-2. Update `CHANGELOG.md`.
-3. Tag and push: `git tag v0.1.0 && git push --tags`.
-4. Users get the update on their next `/plugin marketplace update` (Claude Code) or `codex plugin marketplace upgrade` (Codex).
+1. Check source drift, since CI does not: `./scripts/check-source-drift.sh ../litmus-mcp-server`. Either it is in sync, or sync and re-check the prompt-side assets before continuing.
+2. Bump `version` in both `.claude-plugin/plugin.json` and `plugins/litmus-mcp/.codex-plugin/plugin.json` (keep them in sync). This is the plugin version, independent of the vendored server version pinned in `pyproject.toml`.
+3. Update `CHANGELOG.md`.
+4. Tag and push: `git tag v0.2.0 && git push --tags`.
+5. Users get the update on their next `/plugin marketplace update` (Claude Code) or `codex plugin marketplace upgrade` (Codex).
 
 ## Validate before push
 
 ```bash
-./scripts/check-source-drift.sh ../litmus-mcp-server
+./scripts/check-source-drift.sh ../litmus-mcp-server   # not covered by CI
 claude plugin validate . --strict
 codex plugin marketplace add .
 ```

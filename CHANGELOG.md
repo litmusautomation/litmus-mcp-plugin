@@ -67,10 +67,17 @@ real tool schemas:
   version, and the actual tool-name lists against upstream. Comparison is
   content-based rather than mtime-based, so a fresh CI clone does not report
   permanent false drift.
-- `.github/workflows/check-source-drift.yml`, running that check on push, pull
-  request, and weekly. It also audits every tool name referenced by
-  `commands/`, `skills/`, and `agents/` against `src/`, and audits every
-  documented `litmus-cli` command against the installed binary.
+- `.github/workflows/audit.yml`, running offline consistency checks on push and
+  pull request: every tool name referenced by `commands/`, `skills/`, and
+  `agents/` exists in the vendored `src/`, both plugin manifests are valid JSON
+  with matching versions, and every documented `litmus-cli` command exists in
+  the binary (soft-gated, since that step fetches one).
+
+  The source comparison deliberately stays out of CI. The vendored tree is a
+  pin, so being behind upstream is the normal state between syncs rather than a
+  build failure, and a job that went red on every upstream merge would train
+  people to ignore it. `check-source-drift.sh` is the first step of the release
+  checklist instead.
 - `litmus-cli` as a first-class path rather than something reachable only
   through MCP tool dispatch, which exposes just `list` and `run`:
   - `skills/litmus-cli`, covering connection profiles and multi-edge work, the
@@ -177,9 +184,8 @@ Two upstream defects found and worked around rather than hidden:
 - Codex loads the MCP server and skills only. Its plugin manifest schema
   documents no `commands` or `agents` fields, so the 16 slash commands and the
   `litmus-expert` agent are available in Claude Code but not in Codex.
-- The drift workflow needs an `UPSTREAM_REPO_TOKEN` repository secret while
-  `litmus-mcp-server` is private. Without it, the source comparison is skipped
-  with a warning and only the tool-name audit runs.
+- Source drift against upstream is not checked automatically. Run
+  `./scripts/check-source-drift.sh ../litmus-mcp-server` before tagging.
 - Live-value tools do not work against an Edge with a self-signed certificate,
   because broker TLS cannot be disabled through the MCP server. Use
   `litmus-cli le data subscribe --nats-no-tls` until that is fixed upstream.
