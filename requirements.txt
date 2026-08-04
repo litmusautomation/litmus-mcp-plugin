@@ -1,9 +1,29 @@
-mcp[cli]>=1.17.0
+# Runtime dependencies for the vendored MCP server in src/.
+#
+# Kept to what src/ actually imports, which is a subset of upstream's
+# pyproject.toml: the web-UI deps (fastapi, jinja2, python-multipart) are not
+# vendored, so they are not installed here. When bumping src/ via
+# scripts/sync-from-server.sh, re-check these against upstream's pyproject.toml.
+
+# Lower bound matches upstream. <2 because server.py uses mcp.server APIs
+# (StreamableHTTPSessionManager, Icon) that a major bump may move.
+mcp[cli]>=1.28.1,<2
+
+# Imported directly by server.py and every tools/ module, not just pulled in
+# transitively by mcp, so it is pinned explicitly.
+starlette>=0.40.0
+
 httpx>=0.28.0
 nats-py>=2.11.0
 influxdb>=5.3.2
 pandas>=2.3.3
 numpy>=2.3.4
-aiofiles>=24.1.0
-pydantic>=2.0
-litmussdk @ https://github.com/litmusautomation/litmus-sdk-releases/releases/download/2.6.0/litmussdk-2.6.0-py3-none-any.whl
+
+# server.py filters InsecureRequestWarning from it by name.
+urllib3>=2.0
+
+# Version-matched to upstream litmus-mcp-server 1.4.1. The litmus-cli binary
+# that backs the litmus_sdk_* tools is a separate Go release; src/tools/
+# sdk_cli_tools.py downloads and checksum-verifies it on first use into
+# ~/.cache/litmus-mcp-server/bin/, so nothing needs installing for it here.
+litmussdk @ https://github.com/litmusautomation/litmus-sdk-releases/releases/download/2.7.5/litmussdk-2.7.5-py3-none-any.whl
