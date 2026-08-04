@@ -1,0 +1,25 @@
+# Pin record for the MCP server source vendored into src/. Written by
+# scripts/sync-from-server.sh - edit that script, not this file.
+#
+# This is NOT a build definition and this repo is not an installable package.
+# Runtime dependencies live in requirements.txt and are installed into the
+# plugin data dir by scripts/install-deps.sh. Do not "pip install ." here.
+#
+# It exists because src/config.py's server_version() resolves
+# <src>/../pyproject.toml to report the running server version, which
+# get_mcp_server_info surfaces for support and triage. That function reads
+# [project].version specifically, which is why the table shape is what it is.
+#
+# Side effect of that shape: uv sees a [project] table and treats this
+# directory as a uv project, so "uv run" here will create .venv/ and uv.lock.
+# Both are gitignored. requires-python is set so uv does not warn.
+
+[project]
+name = "litmus-mcp-plugin"
+version = "1.4.1"
+requires-python = ">=3.12"
+
+[tool.litmus-mcp-plugin.source]
+repository = "https://github.com/litmusautomation/litmus-mcp-server"
+ref = "v1.4.1"
+commit = "6e37d2732b9b277c0fe9db8fd927f2ea2f942a7e"

@@ -1,22 +1,22 @@
-from starlette.requests import Request
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData, INVALID_PARAMS
-from mcp.types import TextContent
+import asyncio
 
 from litmussdk.digital_twins import (
-    list_models,
-    create_model,
-    list_all_instances,
     create_instance,
-    list_static_attributes,
-    list_dynamic_attributes,
-    list_transformations,
+    create_model,
     get_hierarchy,
-    save_hierarchy,
+    list_all_instances,
+    list_models,
 )
-from utils.auth import get_litmus_connection
-from utils.formatting import format_success_response, format_error_response
+from litmussdk.utils import api, api_paths, gql_queries
+from mcp.shared.exceptions import McpError
+from mcp.types import INVALID_PARAMS, ErrorData, TextContent, ToolAnnotations
+from starlette.requests import Request
+
 from config import logger
+from utils.auth import get_litmus_connection
+from utils.formatting import format_error_response, format_success_response
+
+from .sdk_cli_tools import CLIFunctionError, run_cli_function
 
 
 async def list_digital_twin_models_tool(
@@ -212,124 +212,164 @@ async def create_digital_twin_instance_tool(
         return format_error_response("create_instance_failed", str(e))
 
 
-async def list_static_attributes_tool(
-    request: Request, arguments: dict
+# Attribute tools are backed by the litmus-cli Go binary rather than the
+# Python SDK: the CLI shares its connection layer with the SDK fallback
+# tools (including LEM bridge routing) and returns plain JSON without
+# pydantic validation.
+
+_ATTRIBUTE_FUNCTIONS = {
+    "static": ("le.digitaltwins.ListStaticAttributes", "static_attributes"),
+    "dynamic": ("le.digitaltwins.ListDynamicAttributes", "dynamic_attributes"),
+}
+
+_INSTANCE_FANOUT_CONCURRENCY = 4
+
+
+async def _cli_list_instances(request: Request) -> list[dict]:
+    instances = (
+        await run_cli_function(request, "le.digitaltwins.ListAllInstances", {}) or []
+    )
+    return [i for i in instances if isinstance(i, dict)]
+
+
+async def _list_attributes_impl(
+    request: Request, arguments: dict, kind: str
 ) -> list[TextContent]:
-    """
-    Lists static attributes for a model or instance.
+    function, result_key = _ATTRIBUTE_FUNCTIONS[kind]
+    model_id = (arguments.get("model_id") or "").strip()
+    instance_id = (arguments.get("instance_id") or "").strip()
+    instance_name = (arguments.get("instance_name") or "").strip()
+    all_instances = bool(arguments.get("all_instances"))
 
-    Must provide either model_id OR instance_id (not both).
-    """
-    try:
-        connection = get_litmus_connection(request)
-
-        model_id = arguments.get("model_id")
-        instance_id = arguments.get("instance_id")
-
-        # Validate that exactly one is provided
-        if not model_id and not instance_id:
-            raise McpError(
-                ErrorData(
-                    code=INVALID_PARAMS,
-                    message="Either 'model_id' or 'instance_id' parameter is required",
-                )
+    if sum(map(bool, (model_id, instance_id, instance_name, all_instances))) != 1:
+        raise McpError(
+            ErrorData(
+                code=INVALID_PARAMS,
+                message=(
+                    "Provide exactly one of 'model_id', 'instance_id', "
+                    "'instance_name', or 'all_instances'."
+                ),
             )
-
-        if model_id and instance_id:
-            raise McpError(
-                ErrorData(
-                    code=INVALID_PARAMS,
-                    message="Cannot specify both 'model_id' and 'instance_id'",
-                )
-            )
-
-        # List static attributes
-        attributes = list_static_attributes(
-            model_id=model_id, instance_id=instance_id, le_connection=connection
         )
 
+    try:
+        if all_instances:
+            instances = await _cli_list_instances(request)
+            semaphore = asyncio.Semaphore(_INSTANCE_FANOUT_CONCURRENCY)
+
+            async def _one(instance: dict) -> dict:
+                iid = instance.get("ID")
+                entry = {
+                    "instance_id": iid,
+                    "instance_name": instance.get("Name"),
+                }
+                async with semaphore:
+                    try:
+                        attributes = (
+                            await run_cli_function(
+                                request, function, {"instanceID": iid}
+                            )
+                            or []
+                        )
+                        entry[result_key] = attributes
+                        entry["count"] = len(attributes)
+                    except CLIFunctionError as e:
+                        entry["error"] = str(e)
+                return entry
+
+            per_instance = list(
+                await asyncio.gather(*[_one(instance) for instance in instances])
+            )
+            total = sum(e.get("count", 0) for e in per_instance)
+            logger.info(
+                f"Retrieved {kind} attributes for {len(per_instance)} digital "
+                f"twin instances ({total} attributes)"
+            )
+            return format_success_response(
+                {
+                    "instances": per_instance,
+                    "instance_count": len(per_instance),
+                    "count": total,
+                }
+            )
+
+        if instance_name:
+            instances = await _cli_list_instances(request)
+            match = next(
+                (
+                    i
+                    for i in instances
+                    if (i.get("Name") or "").lower() == instance_name.lower()
+                ),
+                None,
+            )
+            if match is None:
+                available = sorted(
+                    str(i.get("Name")) for i in instances if i.get("Name")
+                )
+                raise McpError(
+                    ErrorData(
+                        code=INVALID_PARAMS,
+                        message=(
+                            f"Digital twin instance '{instance_name}' not found. "
+                            f"Available instances: {available}"
+                        ),
+                    )
+                )
+            instance_id = match.get("ID") or ""
+
+        cli_args = (
+            {"instanceID": instance_id} if instance_id else {"modelID": model_id}
+        )
+        attributes = await run_cli_function(request, function, cli_args) or []
+
         logger.info(
-            f"Retrieved {len(attributes)} static attributes for "
-            f"{'model ' + model_id if model_id else 'instance ' + instance_id}"
+            f"Retrieved {len(attributes)} {kind} attributes for "
+            f"{'instance ' + instance_id if instance_id else 'model ' + model_id}"
         )
 
         result = {
-            "static_attributes": attributes,
+            result_key: attributes,
             "count": len(attributes),
         }
-
         if model_id:
             result["model_id"] = model_id
         if instance_id:
             result["instance_id"] = instance_id
+        if instance_name:
+            result["instance_name"] = instance_name
 
         return format_success_response(result)
 
     except McpError:
         raise
+    except CLIFunctionError as e:
+        return format_error_response(f"list_{kind}_attributes_failed", str(e))
     except Exception as e:
-        logger.error(f"Error listing static attributes: {e}", exc_info=True)
-        return format_error_response("list_static_attributes_failed", str(e))
+        logger.error(f"Error listing {kind} attributes: {e}", exc_info=True)
+        return format_error_response(f"list_{kind}_attributes_failed", str(e))
+
+
+async def list_static_attributes_tool(
+    request: Request, arguments: dict
+) -> list[TextContent]:
+    """
+    Lists static attributes for a model, an instance, or every instance.
+
+    Provide exactly one of model_id, instance_id, instance_name, all_instances.
+    """
+    return await _list_attributes_impl(request, arguments, "static")
 
 
 async def list_dynamic_attributes_tool(
     request: Request, arguments: dict
 ) -> list[TextContent]:
     """
-    Lists dynamic attributes for a model or instance.
+    Lists dynamic attributes for a model, an instance, or every instance.
 
-    Must provide either model_id OR instance_id (not both).
+    Provide exactly one of model_id, instance_id, instance_name, all_instances.
     """
-    try:
-        connection = get_litmus_connection(request)
-
-        model_id = arguments.get("model_id")
-        instance_id = arguments.get("instance_id")
-
-        # Validate that exactly one is provided
-        if not model_id and not instance_id:
-            raise McpError(
-                ErrorData(
-                    code=INVALID_PARAMS,
-                    message="Either 'model_id' or 'instance_id' parameter is required",
-                )
-            )
-
-        if model_id and instance_id:
-            raise McpError(
-                ErrorData(
-                    code=INVALID_PARAMS,
-                    message="Cannot specify both 'model_id' and 'instance_id'",
-                )
-            )
-
-        # List dynamic attributes
-        attributes = list_dynamic_attributes(
-            model_id=model_id, instance_id=instance_id, le_connection=connection
-        )
-
-        logger.info(
-            f"Retrieved {len(attributes)} dynamic attributes for "
-            f"{'model ' + model_id if model_id else 'instance ' + instance_id}"
-        )
-
-        result = {
-            "dynamic_attributes": attributes,
-            "count": len(attributes),
-        }
-
-        if model_id:
-            result["model_id"] = model_id
-        if instance_id:
-            result["instance_id"] = instance_id
-
-        return format_success_response(result)
-
-    except McpError:
-        raise
-    except Exception as e:
-        logger.error(f"Error listing dynamic attributes: {e}", exc_info=True)
-        return format_error_response("list_dynamic_attributes_failed", str(e))
+    return await _list_attributes_impl(request, arguments, "dynamic")
 
 
 async def list_transformations_tool(
@@ -341,11 +381,7 @@ async def list_transformations_tool(
     Transformations define how data is processed within the model.
     """
     try:
-        connection = get_litmus_connection(request)
-
-        model_id = arguments.get("model_id")
-
-        # Validate required parameter
+        model_id = (arguments.get("model_id") or "").strip()
         if not model_id:
             raise McpError(
                 ErrorData(
@@ -353,9 +389,11 @@ async def list_transformations_tool(
                 )
             )
 
-        # List transformations
-        transformations = list_transformations(
-            model_id=model_id, le_connection=connection
+        transformations = (
+            await run_cli_function(
+                request, "le.digitaltwins.ListTransformations", {"modelID": model_id}
+            )
+            or []
         )
 
         logger.info(
@@ -372,6 +410,8 @@ async def list_transformations_tool(
 
     except McpError:
         raise
+    except CLIFunctionError as e:
+        return format_error_response("list_transformations_failed", str(e))
     except Exception as e:
         logger.error(f"Error listing transformations: {e}", exc_info=True)
         return format_error_response("list_transformations_failed", str(e))
@@ -415,11 +455,63 @@ async def get_hierarchy_tool(request: Request, arguments: dict) -> list[TextCont
         return format_error_response("get_hierarchy_failed", str(e))
 
 
+# Node fields accepted by the SaveAllHierarchy mutation. The getter
+# decorates each node with ID/ModelID/ParentID plus wrapper Name/Attr
+# fields, all of which the save input type rejects with
+# GRAPHQL_VALIDATION_FAILED.
+_SAVE_NODE_FIELDS = (
+    "Position",
+    "Name",
+    "IsFolder",
+    "AttributeID",
+    "AttributeType",
+    "NodeType",
+)
+
+
+def _to_save_hierarchy(hierarchy) -> list:
+    """Convert a hierarchy in get_digital_twin_hierarchy's output shape into
+    the list of SaveAllHierarchyRequest nodes the save mutation accepts, so a
+    get -> save round-trip works as the tool descriptions promise."""
+    if isinstance(hierarchy, dict):
+        if hierarchy.get("Node") is None and "Childs" in hierarchy:
+            # Root wrapper ({"Name": "root", "Node": null, "Childs": [...]})
+            nodes = hierarchy.get("Childs") or []
+        else:
+            nodes = [hierarchy]
+    elif isinstance(hierarchy, list):
+        nodes = hierarchy
+    else:
+        raise McpError(
+            ErrorData(
+                code=INVALID_PARAMS,
+                message="'hierarchy_json' must be a hierarchy object or array of nodes",
+            )
+        )
+
+    save_nodes = []
+    for raw in nodes:
+        if not isinstance(raw, dict):
+            continue
+        node = raw.get("Node") or {}
+        save_node = {k: node.get(k) for k in _SAVE_NODE_FIELDS if k in node}
+        if "Name" not in save_node and raw.get("Name") is not None:
+            save_node["Name"] = raw.get("Name")
+        save_nodes.append(
+            {
+                "Node": save_node,
+                "Childs": _to_save_hierarchy(raw.get("Childs") or []),
+            }
+        )
+    return save_nodes
+
+
 async def save_hierarchy_tool(request: Request, arguments: dict) -> list[TextContent]:
     """
     Saves a new hierarchy configuration to a digital twin model.
 
-    The hierarchy must be in the exact JSON format used by Digital Twins.
+    Accepts the exact shape returned by get_digital_twin_hierarchy and
+    transforms it into the save mutation's input format.
     """
     try:
         connection = get_litmus_connection(request)
@@ -443,12 +535,28 @@ async def save_hierarchy_tool(request: Request, arguments: dict) -> list[TextCon
                 )
             )
 
-        # Save hierarchy
-        result_data = save_hierarchy(
-            model_id=model_id,
-            hierarchy_json=hierarchy_json,
-            le_connection=connection,
+        # Save hierarchy, converted from the getter's shape to the save
+        # mutation's input shape
+        save_nodes = _to_save_hierarchy(hierarchy_json)
+        if not save_nodes:
+            raise McpError(
+                ErrorData(
+                    code=INVALID_PARAMS,
+                    message="'hierarchy_json' contains no hierarchy nodes",
+                )
+            )
+        # The GQL mutation is called directly: litmussdk's save_hierarchy
+        # reads the response key 'SaveHierarchy' while the mutation is named
+        # 'SaveAllHierarchy', so it raises KeyError even on success.
+        gql_result = api.gql_query(
+            api_paths.DT_GRAPHQL,
+            {
+                "query": gql_queries.DT_SAVE_HIERARCHY,
+                "variables": {"modelId": model_id, "input": save_nodes},
+            },
+            connection,
         )
+        result_data = gql_result.get("data", {}).get("SaveAllHierarchy")
 
         logger.info(f"Saved hierarchy for model {model_id}")
 
@@ -471,6 +579,7 @@ TOOLS = [
     {
         "name": "list_digital_twin_models",
         "category": "digitaltwins.models",
+        "annotations": ToolAnnotations(title="List Digital Twin Models", readOnlyHint=True),
         "description": (
             "Lists all Digital Twin models configured on Litmus Edge. "
             "Returns model information including ID, name, description, and version. "
@@ -486,6 +595,7 @@ TOOLS = [
     {
         "name": "create_digital_twin_model",
         "category": "digitaltwins.models",
+        "annotations": ToolAnnotations(title="Create Digital Twin Model", readOnlyHint=False, destructiveHint=True),
         "description": (
             "Creates a new Digital Twin model on Litmus Edge. "
             "A model is the schema/template; create instances from it with create_digital_twin_instance. "
@@ -516,6 +626,7 @@ TOOLS = [
     {
         "name": "list_digital_twin_instances",
         "category": "digitaltwins.instances",
+        "annotations": ToolAnnotations(title="List Digital Twin Instances", readOnlyHint=True),
         "description": (
             "Lists all Digital Twin instances or instances for a specific model. "
             "Instances are runtime representations of models with actual data. "
@@ -536,6 +647,7 @@ TOOLS = [
     {
         "name": "create_digital_twin_instance",
         "category": "digitaltwins.instances",
+        "annotations": ToolAnnotations(title="Create Digital Twin Instance", readOnlyHint=False, destructiveHint=True),
         "description": (
             "Creates a new Digital Twin instance from an existing model. "
             "An instance is a runtime representation of a model that processes and publishes data. "
@@ -577,21 +689,33 @@ TOOLS = [
     {
         "name": "list_static_attributes",
         "category": "digitaltwins.attributes",
+        "annotations": ToolAnnotations(title="List Static Attributes", readOnlyHint=True),
         "description": (
-            "Lists static attributes for a Digital Twin model or instance. "
+            "Lists static attributes for Digital Twin models or instances. "
             "Static attributes are fixed key-value pairs (e.g., serial number, location). "
-            "Must provide either model_id OR instance_id (not both)."
+            "Provide exactly ONE of: model_id, instance_id, instance_name, or "
+            "all_instances=true. When the user asks about several or all twins, "
+            "use all_instances=true (one call returns attributes per instance) "
+            "instead of querying only the first instance."
         ),
         "schema": {
             "type": "object",
             "properties": {
                 "model_id": {
                     "type": "string",
-                    "description": "Model ID to get static attributes from (exclusive with instance_id)",
+                    "description": "Model ID to get static attributes from",
                 },
                 "instance_id": {
                     "type": "string",
-                    "description": "Instance ID to get static attributes from (exclusive with model_id)",
+                    "description": "Instance ID to get static attributes from",
+                },
+                "instance_name": {
+                    "type": "string",
+                    "description": "Instance name (resolved to its ID, case-insensitive)",
+                },
+                "all_instances": {
+                    "type": "boolean",
+                    "description": "true to return static attributes for EVERY instance, grouped per instance",
                 },
             },
             "required": [],
@@ -601,21 +725,33 @@ TOOLS = [
     {
         "name": "list_dynamic_attributes",
         "category": "digitaltwins.attributes",
+        "annotations": ToolAnnotations(title="List Dynamic Attributes", readOnlyHint=True),
         "description": (
-            "Lists dynamic attributes for a Digital Twin model or instance. "
+            "Lists dynamic attributes for Digital Twin models or instances. "
             "Dynamic attributes are real-time data points (e.g., temperature, pressure, speed). "
-            "Must provide either model_id OR instance_id (not both)."
+            "Provide exactly ONE of: model_id, instance_id, instance_name, or "
+            "all_instances=true. When the user asks about several or all twins, "
+            "use all_instances=true (one call returns attributes per instance) "
+            "instead of querying only the first instance."
         ),
         "schema": {
             "type": "object",
             "properties": {
                 "model_id": {
                     "type": "string",
-                    "description": "Model ID to get dynamic attributes from (exclusive with instance_id)",
+                    "description": "Model ID to get dynamic attributes from",
                 },
                 "instance_id": {
                     "type": "string",
-                    "description": "Instance ID to get dynamic attributes from (exclusive with model_id)",
+                    "description": "Instance ID to get dynamic attributes from",
+                },
+                "instance_name": {
+                    "type": "string",
+                    "description": "Instance name (resolved to its ID, case-insensitive)",
+                },
+                "all_instances": {
+                    "type": "boolean",
+                    "description": "true to return dynamic attributes for EVERY instance, grouped per instance",
                 },
             },
             "required": [],
@@ -625,6 +761,7 @@ TOOLS = [
     {
         "name": "list_transformations",
         "category": "digitaltwins.attributes",
+        "annotations": ToolAnnotations(title="List Transformations", readOnlyHint=True),
         "description": (
             "Lists transformations configured for a Digital Twin model. "
             "Transformations define data processing rules and calculations within the model. "
@@ -645,6 +782,7 @@ TOOLS = [
     {
         "name": "get_digital_twin_hierarchy",
         "category": "digitaltwins.hierarchy",
+        "annotations": ToolAnnotations(title="Get Digital Twin Hierarchy", readOnlyHint=True),
         "description": (
             "Gets the hierarchy configuration for a Digital Twin model. "
             "The hierarchy defines the structural relationships and organization within the model. "
@@ -665,10 +803,12 @@ TOOLS = [
     {
         "name": "save_digital_twin_hierarchy",
         "category": "digitaltwins.hierarchy",
+        "annotations": ToolAnnotations(title="Save Digital Twin Hierarchy", readOnlyHint=False, destructiveHint=True),
         "description": (
             "Saves a new hierarchy configuration to a Digital Twin model. "
-            "The hierarchy must be in the exact JSON format used by Digital Twins. "
-            "Use get_digital_twin_hierarchy first to see the expected format."
+            "Accepts the exact shape returned by get_digital_twin_hierarchy "
+            "(a get -> modify -> save round-trip works); extra read-only "
+            "fields (ID, ModelID, ParentID, Attr) are stripped automatically."
         ),
         "schema": {
             "type": "object",

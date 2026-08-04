@@ -23,9 +23,9 @@ if [[ -x "$VENV/bin/python" ]] && diff -q "$REQ_SRC" "$REQ_CACHE" >/dev/null 2>&
   exit 0
 fi
 
-# Pick Python 3.12 or newer
+# Pick Python 3.12 or newer.
 PY=""
-for candidate in "${PYTHON:-}" python3.13 python3.12 python3; do
+for candidate in "${PYTHON:-}" python3.14 python3.13 python3.12 python3; do
   [[ -z "$candidate" ]] && continue
   if command -v "$candidate" >/dev/null 2>&1 \
      && "$candidate" -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)" 2>/dev/null; then
@@ -34,18 +34,39 @@ for candidate in "${PYTHON:-}" python3.13 python3.12 python3; do
   fi
 done
 
+# Fall back to a uv-managed interpreter. Machines with uv installed very often
+# have no versioned python3.1x on PATH at all (uv keeps its toolchains under its
+# own data dir), so a PATH-only search reports "Python 3.12+ required" on a box
+# that has several. uv is not required to use this plugin, only preferred when
+# already present.
+if [[ -z "$PY" ]] && command -v uv >/dev/null 2>&1; then
+  PY="$(uv python find '>=3.12' 2>/dev/null || true)"
+  [[ -x "$PY" ]] || PY=""
+fi
+
 if [[ -z "$PY" ]]; then
-  echo "litmus-mcp plugin: Python 3.12+ required but not found on PATH." >&2
+  echo "litmus-mcp plugin: Python 3.12+ required but none was found." >&2
+  echo "  Searched PATH for python3.14, python3.13, python3.12, python3." >&2
+  command -v uv >/dev/null 2>&1 \
+    && echo "  Also tried 'uv python find >=3.12'; install one with: uv python install 3.12" >&2
   echo "  Ubuntu/Debian:  sudo apt install python3.12 python3.12-venv" >&2
   echo "  macOS:          brew install python@3.12" >&2
-  echo "  Or set PYTHON=/path/to/python3.12 before launching Claude Code." >&2
+  echo "  Or set PYTHON=/path/to/python3.12 before launching your plugin host." >&2
   exit 1
 fi
 
-# Rebuild venv from scratch so partial / wrong-version state can't linger
+# Rebuild the venv from scratch so partial or wrong-version state cannot linger.
 rm -rf "$VENV"
-"$PY" -m venv "$VENV"
-"$VENV/bin/pip" install --upgrade pip --quiet
-"$VENV/bin/pip" install -r "$REQ_SRC" --quiet
+
+# uv creates the venv and resolves deps substantially faster, which matters here
+# because this runs on SessionStart. Fall back to stdlib venv + pip when absent.
+if command -v uv >/dev/null 2>&1; then
+  uv venv --python "$PY" "$VENV" --quiet
+  VIRTUAL_ENV="$VENV" uv pip install -r "$REQ_SRC" --quiet
+else
+  "$PY" -m venv "$VENV"
+  "$VENV/bin/pip" install --upgrade pip --quiet
+  "$VENV/bin/pip" install -r "$REQ_SRC" --quiet
+fi
 
 cp "$REQ_SRC" "$REQ_CACHE"

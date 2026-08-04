@@ -1,6 +1,6 @@
 {
   "name": "litmus-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Natural-language access to Litmus Edge industrial IoT.",
   "author": {
     "name": "Litmus Automation",
@@ -10,13 +10,13 @@
   "homepage": "https://docs.litmus.io",
   "repository": "https://github.com/litmusautomation/litmus-mcp-plugin",
   "license": "Apache-2.0",
-  "keywords": ["litmus", "industrial-iot", "iiot", "edge", "scada"],
+  "keywords": ["litmus", "industrial-iot", "iiot", "edge", "mcp", "scada", "opc-ua", "nats", "influxdb"],
   "skills": "./skills/",
   "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "Litmus MCP",
     "shortDescription": "Industrial IoT tools for Litmus Edge",
-    "longDescription": "Query devices, read tags, sample NATS topics, run InfluxDB historical queries, and manage digital twins on your Litmus Edge instance via natural language.",
+    "longDescription": "Query devices and tags, discover and sample NATS topics, run InfluxDB historical queries, inspect digital twins, and audit Litmus Edge Manager fleets on your Litmus Edge instance via natural language. 62 tools plus a fallback over the full Litmus SDK of roughly 550 functions, with state-changing calls behind an approval gate.",
     "developerName": "Litmus Automation",
     "category": "Productivity",
     "capabilities": ["Read", "Write"],
@@ -24,9 +24,10 @@
     "privacyPolicyURL": "https://litmus.io/privacy",
     "termsOfServiceURL": "https://litmus.io/terms",
     "defaultPrompt": [
-      "List all devices on my Litmus Edge",
-      "Why is device 47 offline?",
-      "Show the last hour of values for tag boiler.temperature"
+      "List the devices on my Litmus Edge and tell me which are actually publishing",
+      "Why did device Machine3 stop reporting, and when?",
+      "Show the last hour of values for the Temperature tag on Machine3",
+      "Audit my Litmus Edge Manager fleet for expired licenses and version spread"
     ],
     "brandColor": "#10B981"
   }

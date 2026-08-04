@@ -1,0 +1,125 @@
+name: check-source-drift
+
+# Fails when the vendored src/ tree has fallen behind litmus-mcp-server.
+#
+# The plugin ships a copy of the server instead of depending on it, so drift is
+# silent: the plugin keeps launching fine while missing tools and fixes. This
+# job makes it loud. It also re-checks that the prompt-side assets still name
+# only tools that exist, since commands/, skills/, and agents/ hardcode tool
+# names and go stale the same way.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Weekly, so an upstream release shows up here rather than in a bug report.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out plugin
+        uses: actions/checkout@v4
+
+      - name: Read pinned upstream ref
+        id: pin
+        run: |
+          ref="$(sed -n 's/^ref = "\(.*\)"/\1/p' pyproject.toml | head -1)"
+          echo "ref=${ref:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "Pinned upstream ref: ${ref:-unknown}"
+
+      - name: Check out litmus-mcp-server
+        id: upstream
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          repository: litmusautomation/litmus-mcp-server
+          path: .upstream
+          fetch-depth: 0
+          # Needed only while litmus-mcp-server is private. Without it the step
+          # fails, the drift check is skipped, and the tool-name audit below
+          # still runs.
+          token: ${{ secrets.UPSTREAM_REPO_TOKEN || github.token }}
+
+      - name: Compare against pinned ref
+        if: steps.upstream.outcome == 'success'
+        run: |
+          git -C .upstream checkout --quiet "${{ steps.pin.outputs.ref }}" \
+            || echo "Pinned ref not found; comparing against upstream default branch instead."
+          ./scripts/check-source-drift.sh .upstream
+
+      - name: Report skip
+        if: steps.upstream.outcome != 'success'
+        run: |
+          echo "::warning::Could not check out litmus-mcp-server, so src/ drift was not verified."
+          echo "Set the UPSTREAM_REPO_TOKEN secret to enable this check."
+
+      - name: Audit tool names referenced by commands, skills, and agents
+        run: |
+          # Every tool name these files mention must exist in the vendored
+          # source, or the prompt is instructing the model to call something
+          # that is not there.
+          grep -rhoE '\b(get|list|create|update|delete|set|start|stop|query|run|lem|litmus)_[a-z_]+\b' \
+            commands/ skills/ agents/ | sort -u > /tmp/referenced.txt
+          grep -rhoE '"name": "[a-z_]+"' src/tools/*.py \
+            | sed 's/.*: "//;s/"//' | sort -u > /tmp/actual.txt
+
+          # Only flag names that look like tool calls: present in prose but not
+          # in the source. Prose words that merely match the pattern are
+          # filtered by requiring the name to appear inside backticks.
+          fail=0
+          while read -r name; do
+            grep -qxF "$name" /tmp/actual.txt && continue
+            if grep -rqF "\`$name\`" commands/ skills/ agents/; then
+              echo "::error::\`$name\` is referenced in commands/skills/agents but is not a tool in src/"
+              fail=1
+            fi
+          done < /tmp/referenced.txt
+
+          [ "$fail" -eq 0 ] && echo "All referenced tool names exist in src/."
+          exit "$fail"
+
+      # The CLI surface drifts across cli-v* releases just like the MCP tool
+      # surface drifts across server releases, and the skills name commands and
+      # flags explicitly. Soft-gated: needs a network fetch of the binary.
+      - name: Install litmus-cli
+        id: cli
+        continue-on-error: true
+        run: |
+          ./scripts/install-cli.sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Audit litmus-cli commands and flags referenced in docs
+        if: steps.cli.outcome == 'success'
+        continue-on-error: true
+        run: |
+          litmus-cli --version
+
+          # Real command inventory, straight from the binary.
+          subcommands() {
+            litmus-cli $1 --help 2>&1 \
+              | sed -n '/^Available Commands:/,/^Flags:/p' \
+              | awk 'NF>1 && $1!~/^(Available|Flags:)/ {print $1}'
+          }
+          {
+            subcommands "" | sed 's/^/litmus-cli /'
+            subcommands "le" | sed 's/^/litmus-cli le /'
+            subcommands "lem" | sed 's/^/litmus-cli lem /'
+            subcommands "le data" | sed 's/^/litmus-cli le data /'
+            subcommands "config" | sed 's/^/litmus-cli config /'
+          } | sort -u > /tmp/cli-real.txt
+
+          grep -rhoE 'litmus-cli (le data [a-z-]+|le [a-z-]+|lem [a-z-]+|config [a-z-]+|list|run|login|update|version)' \
+            commands/ skills/ agents/ README.md scripts/ | sort -u > /tmp/cli-doc.txt
+
+          fail=0
+          while read -r cmd; do
+            grep -qxF "$cmd" /tmp/cli-real.txt \
+              || { echo "::error::'$cmd' is documented but is not a litmus-cli command"; fail=1; }
+          done < /tmp/cli-doc.txt
+
+          [ "$fail" -eq 0 ] && echo "All documented litmus-cli commands exist in $(litmus-cli --version | head -1)."
+          exit "$fail"

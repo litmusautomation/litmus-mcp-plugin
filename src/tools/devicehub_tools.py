@@ -1,19 +1,39 @@
+import asyncio
 import time
-from datetime import datetime, timezone
-from typing import Optional, Any
-from config import logger
-from utils.auth import get_litmus_connection, get_influx_connection_params
-from utils.formatting import format_success_response, format_error_response
-from .data_tools import get_current_value_on_topic, _make_influx_client
+from datetime import UTC, datetime
+from typing import Any
 
-from mcp.shared.exceptions import McpError
-from mcp.types import ErrorData, INVALID_PARAMS, INTERNAL_ERROR
-from mcp.types import TextContent
-from starlette.requests import Request
 from litmussdk.devicehub import devices, tags
-from litmussdk.devicehub.tags._models import Tag
 from litmussdk.devicehub.drivers import list_all_drivers
+from litmussdk.devicehub.tags import Tag
 from litmussdk.utils import api, api_paths, gql_queries
+from mcp.shared.exceptions import McpError
+from mcp.types import (
+    INTERNAL_ERROR,
+    INVALID_PARAMS,
+    ErrorData,
+    TextContent,
+    ToolAnnotations,
+)
+from starlette.requests import Request
+
+from config import logger
+from utils.auth import get_influx_connection_params, get_litmus_connection
+from utils.formatting import (
+    format_error_response,
+    format_success_response,
+    redact_secrets,
+)
+
+from .data_tools import (
+    _device_measurement_name,
+    _influx_connection_note,
+    _list_measurement_names,
+    _make_influx_client,
+    _with_connection_note,
+    get_current_value_on_topic,
+)
+from .sdk_cli_tools import CLIFunctionError, run_cli_function
 
 # Short-lived cache for the device list, keyed by EDGE_URL.
 # Avoids redundant API round-trips when the LLM calls multiple device tools
@@ -147,21 +167,20 @@ async def create_devicehub_device(
                 )
             )
 
-        connection = get_litmus_connection(request)
-
-        # Get driver information
-        driver_list = list_all_drivers(le_connection=connection)
-        driver_map = {}
-        driver_names = []
-
-        for driver in driver_list:
-            driver_map[driver.name] = {
-                "id": driver.id,
-                "properties": driver.get_default_properties(),
-            }
-            driver_names.append(driver.name)
-
-        if selected_driver not in driver_names:
+        # Device creation goes through litmus-cli: the Python SDK's Device
+        # model resolves drivers through its env-based default connection
+        # (the placeholder-host bug) and its pydantic objects don't
+        # serialize; the Go path takes the driver JSON verbatim and fills
+        # required properties from the driver's defaults.
+        driver_list = (
+            await run_cli_function(request, "le.devicehub.ListDrivers", {}) or []
+        )
+        driver_list = [d for d in driver_list if isinstance(d, dict)]
+        driver_names = sorted(d.get("Name") for d in driver_list if d.get("Name"))
+        requested_driver = next(
+            (d for d in driver_list if d.get("Name") == selected_driver), None
+        )
+        if requested_driver is None:
             raise McpError(
                 ErrorData(
                     code=INVALID_PARAMS,
@@ -169,25 +188,22 @@ async def create_devicehub_device(
                 )
             )
 
-        # Create device
-        device = devices.Device(
-            name=name,
-            properties=driver_map[selected_driver]["properties"],
-            driver=driver_map[selected_driver]["id"],
+        created = await run_cli_function(
+            request,
+            "le.devicehub.CreateDefaultDevice",
+            {"driver": requested_driver, "name": name, "params": {}},
         )
-
-        created_device = devices.create_device(device, le_connection=connection)
-
-        device_dict = (
-            created_device.__dict__
-            if hasattr(created_device, "__dict__")
-            else {"id": str(created_device)}
-        )
+        created = created if isinstance(created, dict) else {}
 
         logger.info(f"Created device '{name}' with driver '{selected_driver}'")
 
         result = {
-            "device": device_dict,
+            "device": {
+                "id": created.get("ID"),
+                "name": created.get("Name", name),
+                "driver": selected_driver,
+                "description": created.get("Description"),
+            },
             "next_steps": [
                 "Update connection properties (IP address, port, etc.)",
                 "Configure tags/registers for data collection",
@@ -266,16 +282,45 @@ def _extract_tags(raw_registers: list) -> list[dict]:
     return tag_data
 
 
+def _parse_page_args(arguments: dict) -> tuple[int, int]:
+    """Validate and return (limit, offset) pagination arguments."""
+    try:
+        limit = int(arguments.get("limit", _TAG_LIMIT))
+        offset = int(arguments.get("offset", 0))
+    except (TypeError, ValueError):
+        raise McpError(
+            ErrorData(
+                code=INVALID_PARAMS,
+                message="'limit' and 'offset' must be integers",
+            )
+        )
+    if not (1 <= limit <= _TAG_LIMIT):
+        raise McpError(
+            ErrorData(
+                code=INVALID_PARAMS,
+                message=f"'limit' must be between 1 and {_TAG_LIMIT}",
+            )
+        )
+    if offset < 0:
+        raise McpError(
+            ErrorData(code=INVALID_PARAMS, message="'offset' must be >= 0")
+        )
+    return limit, offset
+
+
 async def get_devicehub_device_tags(
     request: Request, arguments: dict
 ) -> list[TextContent]:
     """
-    Retrieves tags for a specific device or all devices.
+    Retrieves tags for a specific device or all devices, paginated.
 
-    Always counts first; refuses to list if total exceeds _TAG_LIMIT.
+    Counts first, then returns one page of up to `limit` tags starting at
+    `offset` (GraphQL Limit/SkipCount). Response carries total_count,
+    has_more, and next_offset so callers can page through any tag count.
     """
     try:
         device_name = (arguments.get("device_name") or "").strip()
+        limit, offset = _parse_page_args(arguments)
         connection = get_litmus_connection(request)
 
         if device_name:
@@ -302,25 +347,21 @@ async def get_devicehub_device_tags(
                 .get("ListRegisters", {})
                 .get("TotalCount", 0)
             )
-            if total > _TAG_LIMIT:
-                return format_success_response(
-                    {
-                        "device_name": device_name,
-                        "total_count": total,
-                        "message": (
-                            f"Device '{device_name}' has {total} tags, which exceeds "
-                            f"the limit of {_TAG_LIMIT}. Cannot return the full list."
-                        ),
-                    }
-                )
 
+            # SkipCount is only sent when actually paginating, so the default
+            # first-page call stays compatible with LE builds whose GraphQL
+            # schema predates the field.
+            list_input: dict[str, Any] = {
+                "DeviceID": requested_device.id,
+                "Limit": limit,
+            }
+            if offset:
+                list_input["SkipCount"] = offset
             list_result = api.gql_query(
                 api_paths.DH_GRAPHQL,
                 {
                     "query": gql_queries.LIST_TAGS,
-                    "variables": {
-                        "input": {"DeviceID": requested_device.id, "Limit": _TAG_LIMIT}
-                    },
+                    "variables": {"input": list_input},
                 },
                 connection,
             )
@@ -343,22 +384,15 @@ async def get_devicehub_device_tags(
                 .get("ListRegistersFromAllDevices", {})
                 .get("TotalCount", 0)
             )
-            if total > _TAG_LIMIT:
-                return format_success_response(
-                    {
-                        "total_count": total,
-                        "message": (
-                            f"There are {total} tags across all devices, which exceeds "
-                            f"the limit of {_TAG_LIMIT}. Specify a device_name to narrow the query."
-                        ),
-                    }
-                )
 
+            list_input = {"Limit": limit}
+            if offset:
+                list_input["SkipCount"] = offset
             list_result = api.gql_query(
                 api_paths.DH_GRAPHQL,
                 {
                     "query": _LIST_ALL_TAGS_RAW,
-                    "variables": {"input": {"Limit": _TAG_LIMIT}},
+                    "variables": {"input": list_input},
                 },
                 connection,
             )
@@ -370,13 +404,27 @@ async def get_devicehub_device_tags(
             scope = "all devices"
 
         tag_data = _extract_tags(raw_registers)
-        logger.info(f"Retrieved {len(tag_data)} tags for {scope}")
+        has_more = offset + len(tag_data) < total
+        logger.info(
+            f"Retrieved {len(tag_data)} of {total} tags for {scope} "
+            f"(offset={offset}, limit={limit})"
+        )
 
         result: dict[str, Any] = {
             "count": len(tag_data),
+            "total_count": total,
+            "offset": offset,
+            "limit": limit,
+            "has_more": has_more,
             "tags": tag_data,
             "tag_names": [t["tag_name"] for t in tag_data],
         }
+        if has_more:
+            result["next_offset"] = offset + len(tag_data)
+            result["message"] = (
+                f"Returned tags {offset}-{offset + len(tag_data)} of {total}. "
+                f"Call again with offset={offset + len(tag_data)} for the next page."
+            )
         if device_name:
             result["device_name"] = device_name
 
@@ -430,7 +478,9 @@ async def get_current_value_of_devicehub_tag(
             )
 
         # Find tag
-        tag_list = tags.list_registers_from_single_device(requested_device)
+        tag_list = tags.list_registers_from_single_device(
+            requested_device, le_connection=connection
+        )
 
         if tag_name:
             requested_tag = next(
@@ -468,7 +518,7 @@ async def get_current_value_of_devicehub_tag(
             )
 
         # Read current value
-        value_data = await get_current_value_on_topic(
+        value_data, subject = await get_current_value_on_topic(
             topic=requested_value_from_topic, request=request
         )
 
@@ -478,6 +528,7 @@ async def get_current_value_of_devicehub_tag(
             "device_name": device_name,
             "tag_name": tag_name or requested_tag.tag_name,
             "tag_id": tag_id or requested_tag.id,
+            "subject": subject,
             "data": value_data,
         }
 
@@ -492,27 +543,39 @@ async def get_current_value_of_devicehub_tag(
 
 def _find_device_by_name(
     connection: Any, device_name: str, request=None
-) -> Optional[Any]:
-    """Find a device by name, using a short-lived cache to avoid redundant API calls."""
+) -> Any | None:
+    """Find a device by name, using a short-lived cache to avoid redundant API calls.
+
+    A cache miss on the name triggers one fresh fetch: a device created
+    moments ago (e.g. create_devicehub_device followed by create_devicehub_tag)
+    must be findable before the cached list expires.
+    """
     cache_key = ""
     if request is not None:
         cache_key = request.headers.get("EDGE_URL") or ""
 
+    def _search(device_list):
+        return next((d for d in device_list if d.name == device_name), None)
+
     now = time.monotonic()
+    served_from_cache = False
     if cache_key:
         cached = _device_list_cache.get(cache_key)
         if cached and now - cached[1] < _DEVICE_LIST_TTL:
             device_list = cached[0]
+            served_from_cache = True
         else:
             device_list = devices.list_devices(le_connection=connection)
             _device_list_cache[cache_key] = (device_list, now)
     else:
         device_list = devices.list_devices(le_connection=connection)
 
-    for device in device_list:
-        if device.name == device_name:
-            return device
-    return None
+    device = _search(device_list)
+    if device is None and served_from_cache:
+        device_list = devices.list_devices(le_connection=connection)
+        _device_list_cache[cache_key] = (device_list, time.monotonic())
+        device = _search(device_list)
+    return device
 
 
 def _build_device_info(device: Any) -> dict:
@@ -533,7 +596,9 @@ def _build_device_info(device: Any) -> dict:
 
     device_info = {k: v for k, v in device_info.items() if v is not None}
 
-    return device_info
+    # Device properties can carry credentials (PLC passwords, OPC-UA private
+    # keys/certs); never hand those to the LLM.
+    return redact_secrets(device_info)
 
 
 def _create_device_summary(device_data: list[dict]) -> dict:
@@ -582,57 +647,93 @@ async def get_device_connection_status(
             device_list = devices.list_devices(le_connection=connection)
 
         params = get_influx_connection_params(request)
+        note = _influx_connection_note(params)
         client = _make_influx_client(params)
         now_epoch = time.time()
+        measurement_names = _list_measurement_names(client)
 
         results = []
         for device in device_list:
-            output_topic = None
-            try:
-                tag_list = tags.list_registers_from_single_device(
-                    device, le_connection=connection
-                )
-                for tag in tag_list:
-                    for tp in tag.topics or []:
-                        if tp.direction == "Output":
-                            output_topic = tp.topic
-                            break
-                    if output_topic:
-                        break
-            except Exception:
-                pass
+            error = None
 
+            # Modern LE stores all of a device's data in one measurement
+            # named "<DeviceName>.<DeviceID>"; probe that first. Legacy
+            # setups (one measurement per output topic) are the fallback.
+            probe_measurements = []
+            device_measurement = _device_measurement_name(
+                measurement_names, device
+            )
+            if device_measurement:
+                probe_measurements = [device_measurement]
+            else:
+                try:
+                    tag_list = tags.list_registers_from_single_device(
+                        device, le_connection=connection
+                    )
+                    for tag in tag_list:
+                        for tp in tag.topics or []:
+                            if tp.direction == "Output":
+                                probe_measurements.append(tp.topic)
+                except Exception as e:
+                    error = f"tag_listing_failed: {e}"
+                    logger.warning(
+                        f"Could not list tags for device '{device.name}': {e}"
+                    )
+
+            # Newest data point across the probed measurements.
+            # SELECT last(*) is deliberately avoided: applied to multiple
+            # fields, InfluxQL returns the epoch-0 timestamp instead of the
+            # point's real time.
             status = "no_data"
             last_seen = None
-            if output_topic:
+            last_seen_measurement = None
+            newest_ts = None
+            for probe in probe_measurements:
                 try:
-                    rs = client.query(f'SELECT last(*) FROM "{output_topic}"')
+                    rs = client.query(
+                        f'SELECT * FROM "{probe}" ORDER BY time DESC LIMIT 1'
+                    )
                     pts = list(rs.get_points())
-                    if pts:
-                        ts_str = pts[0].get("time", "")
-                        ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    if not pts:
+                        continue
+                    ts_str = pts[0].get("time", "")
+                    ts = datetime.fromisoformat(ts_str)
+                    ts_epoch = ts.replace(tzinfo=UTC).timestamp()
+                    if newest_ts is None or ts_epoch > newest_ts:
+                        newest_ts = ts_epoch
                         last_seen = ts_str
-                        age_s = now_epoch - ts.replace(tzinfo=timezone.utc).timestamp()
-                        status = "connected" if age_s <= threshold else "stale"
-                except Exception:
-                    pass
+                        last_seen_measurement = probe
+                except Exception as e:
+                    error = f"influx_query_failed: {e}"
+                    logger.warning(
+                        f"InfluxDB query failed for measurement '{probe}': {e}"
+                    )
 
-            results.append(
-                {
-                    "device_name": device.name,
-                    "device_id": device.id,
-                    "status": status,
-                    "last_seen": last_seen,
-                    "checked_topic": output_topic,
-                }
-            )
+            if newest_ts is not None:
+                age_s = now_epoch - newest_ts
+                status = "connected" if age_s <= threshold else "stale"
+
+            result = {
+                "device_name": device.name,
+                "device_id": device.id,
+                "status": status,
+                "last_seen": last_seen,
+                "checked_topic": last_seen_measurement,
+                "checked_topics_count": len(probe_measurements),
+            }
+            if error:
+                result["error"] = error
+            results.append(result)
 
         return format_success_response(
-            {
-                "count": len(results),
-                "threshold_seconds": threshold,
-                "devices": results,
-            }
+            _with_connection_note(
+                {
+                    "count": len(results),
+                    "threshold_seconds": threshold,
+                    "devices": results,
+                },
+                note,
+            )
         )
 
     except McpError:
@@ -869,6 +970,47 @@ async def delete_devicehub_tag(request: Request, arguments: dict) -> list[TextCo
         return format_error_response("deletion_failed", str(e))
 
 
+# Tag status is backed by the litmus-cli Go binary: the Python SDK path
+# requires every tag on a device to pass strict pydantic validation before a
+# status can be fetched, so a single quirky tag silently dropped a whole
+# device from the results.
+
+_STATUS_FANOUT_CONCURRENCY = 4
+
+
+async def _cli_device_tag_statuses(
+    request: Request, device_id: str
+) -> tuple[dict, list]:
+    """Return ({tag_id: tag_name}, [{'ID', 'State'}...]) for one device via
+    litmus-cli."""
+    page = await run_cli_function(
+        request,
+        "le.devicehub.ListDeviceTags",
+        {"deviceID": device_id, "limit": _TAG_LIMIT},
+    )
+    # ListDeviceTags answers with TagPage{Registers, TotalCount, Last}, not a
+    # bare array. Iterating the response itself walks those three keys as
+    # strings, so no tag was ever found and both status tools reported nothing
+    # while still succeeding.
+    cli_tags = page.get("Registers") or [] if isinstance(page, dict) else []
+    tag_map = {
+        t.get("ID"): t.get("TagName") or t.get("Name")
+        for t in cli_tags
+        if isinstance(t, dict) and t.get("ID")
+    }
+    if not tag_map:
+        return {}, []
+    states = (
+        await run_cli_function(
+            request,
+            "le.devicehub.TagStatus",
+            {"deviceID": device_id, "tagIDs": list(tag_map.keys())},
+        )
+        or []
+    )
+    return tag_map, [s for s in states if isinstance(s, dict)]
+
+
 async def get_tag_status(request: Request, arguments: dict) -> list[TextContent]:
     """Get OK/ERROR status for tags on a device. Optionally filter to a single tag."""
     try:
@@ -889,30 +1031,21 @@ async def get_tag_status(request: Request, arguments: dict) -> list[TextContent]
                 )
             )
 
-        tag_list = tags.list_registers_from_single_device(
-            device, le_connection=connection
-        )
+        tag_map, states = await _cli_device_tag_statuses(request, device.id)
+
+        statuses = [
+            {**s, "tag_name": tag_map.get(s.get("ID", ""), "unknown")}
+            for s in states
+        ]
         if filter_tag:
-            tag_list = [t for t in tag_list if t.tag_name == filter_tag]
-            if not tag_list:
+            statuses = [s for s in statuses if s.get("tag_name") == filter_tag]
+            if not statuses:
                 raise McpError(
                     ErrorData(
                         code=INVALID_PARAMS,
                         message=f"Tag '{filter_tag}' not found on device '{device_name}'.",
                     )
                 )
-
-        if not tag_list:
-            return format_success_response(
-                {"device_name": device_name, "count": 0, "statuses": []}
-            )
-
-        raw_statuses = tags.tag_status(device, tag_list, le_connection=connection)
-        tag_map = {t.id: t.tag_name for t in tag_list}
-        statuses = [
-            {**s, "tag_name": tag_map.get(s.get("ID", ""), "unknown")}
-            for s in raw_statuses
-        ]
 
         return format_success_response(
             {
@@ -924,6 +1057,8 @@ async def get_tag_status(request: Request, arguments: dict) -> list[TextContent]
 
     except McpError:
         raise
+    except CLIFunctionError as e:
+        return format_error_response("status_failed", str(e))
     except Exception as e:
         logger.error(f"Error getting tag status: {e}", exc_info=True)
         return format_error_response("status_failed", str(e))
@@ -936,33 +1071,45 @@ async def get_all_tags_status(request: Request, arguments: dict) -> list[TextCon
     """
     try:
         filter_state = (arguments.get("filter_status", "not_ok") or "").strip().upper()
+        # The LE RegisterState enum is OK/Failed/Unknown; accept the commonly
+        # guessed 'ERROR' as an alias for 'Failed'.
+        if filter_state == "ERROR":
+            filter_state = "FAILED"
 
-        connection = get_litmus_connection(request)
-        device_list = devices.list_devices(le_connection=connection)
+        device_list = (
+            await run_cli_function(request, "le.devicehub.ListDevices", {}) or []
+        )
+        device_list = [d for d in device_list if isinstance(d, dict) and d.get("ID")]
 
-        all_statuses = []
-        for device in device_list:
-            try:
-                tag_list = tags.list_registers_from_single_device(
-                    device, le_connection=connection
-                )
-                if not tag_list:
-                    continue
-                raw = tags.tag_status(device, tag_list, le_connection=connection)
-                tag_map = {t.id: t.tag_name for t in tag_list}
-                for s in raw:
-                    all_statuses.append(
-                        {
-                            **s,
-                            "tag_name": tag_map.get(s.get("ID", ""), "unknown"),
-                            "device_name": device.name,
-                            "device_id": device.id,
-                        }
+        semaphore = asyncio.Semaphore(_STATUS_FANOUT_CONCURRENCY)
+        device_errors = []
+
+        async def _one(device: dict) -> list[dict]:
+            async with semaphore:
+                try:
+                    tag_map, states = await _cli_device_tag_statuses(
+                        request, device["ID"]
                     )
-            except Exception as ex:
-                logger.warning(
-                    f"Could not get tag status for device '{device.name}': {ex}"
-                )
+                except Exception as ex:
+                    logger.warning(
+                        f"Could not get tag status for device '{device.get('Name')}': {ex}"
+                    )
+                    device_errors.append(
+                        {"device_name": device.get("Name"), "error": str(ex)}
+                    )
+                    return []
+            return [
+                {
+                    **s,
+                    "tag_name": tag_map.get(s.get("ID", ""), "unknown"),
+                    "device_name": device.get("Name"),
+                    "device_id": device["ID"],
+                }
+                for s in states
+            ]
+
+        per_device = await asyncio.gather(*[_one(d) for d in device_list])
+        all_statuses = [s for group in per_device for s in group]
 
         if filter_state == "NOT_OK":
             all_statuses = [
@@ -973,16 +1120,21 @@ async def get_all_tags_status(request: Request, arguments: dict) -> list[TextCon
                 s for s in all_statuses if s.get("State", "").upper() == filter_state
             ]
 
-        return format_success_response(
-            {
-                "count": len(all_statuses),
-                "filter_status": filter_state or None,
-                "statuses": all_statuses,
-            }
-        )
+        result: dict[str, Any] = {
+            "count": len(all_statuses),
+            "filter_status": filter_state or None,
+            "statuses": all_statuses,
+            "devices_checked": len(device_list),
+        }
+        if device_errors:
+            result["device_errors"] = device_errors
+
+        return format_success_response(result)
 
     except McpError:
         raise
+    except CLIFunctionError as e:
+        return format_error_response("status_failed", str(e))
     except Exception as e:
         logger.error(f"Error getting all tag statuses: {e}", exc_info=True)
         return format_error_response("status_failed", str(e))
@@ -992,6 +1144,7 @@ TOOLS = [
     {
         "name": "get_litmusedge_driver_list",
         "category": "devicehub.drivers",
+        "annotations": ToolAnnotations(title="List DeviceHub Drivers", readOnlyHint=True),
         "description": (
             "Retrieves all available drivers supported by Litmus Edge DeviceHub. "
             "Returns a list of supported industrial protocols and device drivers "
@@ -1008,6 +1161,7 @@ TOOLS = [
     {
         "name": "get_devicehub_devices",
         "category": "devicehub.devices",
+        "annotations": ToolAnnotations(title="List DeviceHub Devices", readOnlyHint=True),
         "description": (
             "Retrieves all configured devices in the DeviceHub module on Litmus Edge. "
             "Returns detailed information about each device including name, driver type, "
@@ -1028,6 +1182,7 @@ TOOLS = [
     {
         "name": "create_devicehub_device",
         "category": "devicehub.devices",
+        "annotations": ToolAnnotations(title="Create DeviceHub Device", readOnlyHint=False, destructiveHint=True),
         "description": (
             "Creates a new device in DeviceHub with specified driver and default configuration. "
             "IMPORTANT: This only creates the device with default settings. You'll need to: "
@@ -1053,6 +1208,7 @@ TOOLS = [
     {
         "name": "get_device_connection_status",
         "category": "devicehub.devices",
+        "annotations": ToolAnnotations(title="Get Device Connection Status", readOnlyHint=True),
         "description": (
             "Checks whether DeviceHub devices are actively publishing data by probing InfluxDB "
             "for recent records. Returns connected/stale/no_data per device. "
@@ -1078,13 +1234,14 @@ TOOLS = [
     {
         "name": "get_devicehub_device_tags",
         "category": "devicehub.tags",
+        "annotations": ToolAnnotations(title="List Device Tags", readOnlyHint=True),
         "description": (
-            "Retrieves tags (data points/registers) with their configuration. "
-            "If device_name is provided, returns tags for that device only. "
-            "If device_name is omitted, returns tags across ALL devices. "
-            "Always performs a count check first - if the total exceeds 1000 the "
-            "tags are NOT returned and you should inform the user of the count and "
-            "ask them to specify a device_name to narrow the query."
+            "Retrieves tags (data points/registers) with their configuration, "
+            "paginated. If device_name is provided, returns tags for that device "
+            "only; otherwise tags across ALL devices. Returns up to `limit` tags "
+            "per call starting at `offset`, plus total_count/has_more/next_offset. "
+            "When has_more is true, call again with offset=next_offset to fetch "
+            "the next page - any total tag count can be paged through."
         ),
         "schema": {
             "type": "object",
@@ -1092,6 +1249,16 @@ TOOLS = [
                 "device_name": {
                     "type": "string",
                     "description": "Name of the device to filter by (omit to query all devices)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": f"Page size, 1-{_TAG_LIMIT} (default {_TAG_LIMIT})",
+                    "default": _TAG_LIMIT,
+                },
+                "offset": {
+                    "type": "integer",
+                    "description": "Number of tags to skip; use next_offset from the previous page (default 0)",
+                    "default": 0,
                 },
             },
             "required": [],
@@ -1101,6 +1268,7 @@ TOOLS = [
     {
         "name": "get_current_value_of_devicehub_tag",
         "category": "devicehub.tags",
+        "annotations": ToolAnnotations(title="Get Tag Current Value", readOnlyHint=True),
         "description": (
             "Reads the current real-time value of a specific tag from a device. "
             "Returns the value along with timestamp and quality. "
@@ -1129,6 +1297,7 @@ TOOLS = [
     {
         "name": "create_devicehub_tag",
         "category": "devicehub.tags",
+        "annotations": ToolAnnotations(title="Create Device Tag", readOnlyHint=False, destructiveHint=True),
         "description": (
             "Creates a new tag (register) on a DeviceHub device. "
             "register_name is the driver-specific register type (e.g. 'S' for Generator, "
@@ -1172,6 +1341,7 @@ TOOLS = [
     {
         "name": "update_devicehub_tag",
         "category": "devicehub.tags",
+        "annotations": ToolAnnotations(title="Update Device Tag", readOnlyHint=False, destructiveHint=True),
         "description": (
             "Updates mutable fields of an existing DeviceHub tag: display name, description, or properties. "
             "The device and tag must already exist. Use get_devicehub_device_tags to find tag names."
@@ -1207,6 +1377,7 @@ TOOLS = [
     {
         "name": "delete_devicehub_tag",
         "category": "devicehub.tags",
+        "annotations": ToolAnnotations(title="Delete Device Tag", readOnlyHint=False, destructiveHint=True),
         "description": (
             "Deletes a tag from a DeviceHub device. This is destructive and cannot be undone. "
             "Use get_devicehub_device_tags to confirm the tag name before deleting."
@@ -1230,8 +1401,10 @@ TOOLS = [
     {
         "name": "get_tag_status",
         "category": "devicehub.tags",
+        "annotations": ToolAnnotations(title="Get Tag Status", readOnlyHint=True),
         "description": (
-            "Returns OK/ERROR status for tags on a specific device. "
+            "Returns the runtime state for tags on a specific device. "
+            "State is one of OK, Failed, or Unknown (LE RegisterState enum). "
             "Optionally filter to a single tag by name. "
             "Use this to diagnose which tags are failing on a device."
         ),
@@ -1254,17 +1427,19 @@ TOOLS = [
     {
         "name": "get_all_tags_status",
         "category": "devicehub.tags",
+        "annotations": ToolAnnotations(title="Get All Tags Status", readOnlyHint=True),
         "description": (
-            "Returns tag status across ALL devices. Defaults to returning only non-OK tags "
-            "so the LLM sees actionable issues first. Pass filter_status='' to see all. "
-            "Use get_tag_status for a single device."
+            "Returns tag status across ALL devices. Tag state is one of OK, "
+            "Failed, or Unknown (LE RegisterState enum). Defaults to returning "
+            "only non-OK tags so the LLM sees actionable issues first. Pass "
+            "filter_status='' to see all. Use get_tag_status for a single device."
         ),
         "schema": {
             "type": "object",
             "properties": {
                 "filter_status": {
                     "type": "string",
-                    "description": "Filter by state: 'not_ok' (default), 'OK', 'ERROR', or '' for all",
+                    "description": "Filter by state: 'not_ok' (default), 'OK', 'Failed', 'Unknown', or '' for all",
                     "default": "not_ok",
                 },
             },
