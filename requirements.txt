@@ -26,4 +26,4 @@ urllib3>=2.0
 # that backs the litmus_sdk_* tools is a separate Go release; src/tools/
 # sdk_cli_tools.py downloads and checksum-verifies it on first use into
 # ~/.cache/litmus-mcp-server/bin/, so nothing needs installing for it here.
-litmussdk @ https://github.com/litmusautomation/litmus-sdk-releases/releases/download/2.7.5/litmussdk-2.7.5-py3-none-any.whl
+litmussdk @ https://github.com/litmusautomation/litmus-sdk-releases/releases/download/2.8.0/litmussdk-2.8.0-py3-none-any.whl
