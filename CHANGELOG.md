@@ -6,6 +6,19 @@ Versions track the plugin, not the MCP server it vendors. The vendored server
 version is pinned separately in `pyproject.toml` and reported by
 `get_mcp_server_info`.
 
+## 0.2.1
+
+### Security
+
+- Resynced `src/` to upstream litmus-mcp-server v1.4.4. The `litmus-cli`
+  self-install pin moves from cli-v0.9.2 (built with Go 1.24.13) to cli-v1.0.2
+  (Go 1.26.10), clearing the October 2026 Go TLS CVE.
+- Bumped `litmussdk` to 2.8.1 and added a `certifi>=2026.10.19` floor for the
+  CA CVE fix.
+- TLS certificates are now verified by default, retrying unverified with a
+  visible warning, and configured secrets are kept out of stderr (from
+  upstream).
+
 ## 0.2.0
 
 ### Fixed
