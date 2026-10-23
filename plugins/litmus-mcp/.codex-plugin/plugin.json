@@ -1,6 +1,6 @@
 {
   "name": "litmus-mcp",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Natural-language access to Litmus Edge industrial IoT.",
   "author": {
     "name": "Litmus Automation",

@@ -22,8 +22,11 @@ numpy>=2.3.4
 # server.py filters InsecureRequestWarning from it by name.
 urllib3>=2.0
 
-# Version-matched to upstream litmus-mcp-server 1.4.1. The litmus-cli binary
+# Floor for the October 2026 CA/TLS CVE fix, matching upstream.
+certifi>=2026.10.19
+
+# Version-matched to upstream litmus-mcp-server 1.4.4. The litmus-cli binary
 # that backs the litmus_sdk_* tools is a separate Go release; src/tools/
 # sdk_cli_tools.py downloads and checksum-verifies it on first use into
 # ~/.cache/litmus-mcp-server/bin/, so nothing needs installing for it here.
-litmussdk @ https://github.com/litmusautomation/litmus-sdk-releases/releases/download/2.8.0/litmussdk-2.8.0-py3-none-any.whl
+litmussdk @ https://github.com/litmusautomation/litmus-sdk-releases/releases/download/2.8.1/litmussdk-2.8.1-py3-none-any.whl

@@ -16,10 +16,10 @@
 
 [project]
 name = "litmus-mcp-plugin"
-version = "1.4.1"
+version = "1.4.4"
 requires-python = ">=3.12"
 
 [tool.litmus-mcp-plugin.source]
 repository = "https://github.com/litmusautomation/litmus-mcp-server"
-ref = "v1.4.1"
-commit = "6e37d2732b9b277c0fe9db8fd927f2ea2f942a7e"
+ref = "v1.4.4"
+commit = "901c80d628f94281d2c4fbb92a7717f2b632e82b"
